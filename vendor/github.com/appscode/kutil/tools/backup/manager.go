@@ -140,7 +140,7 @@ func (mgr BackupManager) Backup(process processorFunc) error {
 		}
 		for _, r := range list.APIResources {
 			if strings.ContainsRune(r.Name, '/') {
-				continue
+				continue // skip subresource
 			}
 			glog.V(3).Infof("Taking backup of %s apiVersion:%s kind:%s", list.GroupVersion, r.Name)
 			mgr.config.GroupVersion = &gv
