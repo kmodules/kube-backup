@@ -31,7 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
+	"github.com/tamalsaha/go-oneliners"
 	"github.com/golang/glog"
 	"golang.org/x/net/http2"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -747,6 +747,7 @@ func (r *Request) DoRaw() ([]byte, error) {
 
 	var result Result
 	err := r.request(func(req *http.Request, resp *http.Response) {
+		oneliners.DumpHttpRequest(req)
 		result.body, result.err = ioutil.ReadAll(resp.Body)
 		glogBody("Response Body", result.body)
 		if resp.StatusCode < http.StatusOK || resp.StatusCode > http.StatusPartialContent {

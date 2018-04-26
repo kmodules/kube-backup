@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
+	"k8s.io/apimachinery/pkg/util/sets"
 	"github.com/ghodss/yaml"
 	"github.com/golang/glog"
 	core "k8s.io/api/core/v1"
@@ -142,11 +142,15 @@ func (mgr BackupManager) Backup(process processorFunc) error {
 			if strings.ContainsRune(r.Name, '/') {
 				continue // skip subresource
 			}
+			if !sets.NewString(r.Verbs...).HasAll("list", "get") {
+				continue
+			}
+
 			glog.V(3).Infof("Taking backup of %s apiVersion:%s kind:%s", list.GroupVersion, r.Name)
 			mgr.config.GroupVersion = &gv
 			mgr.config.APIPath = "/apis"
 			if gv.Group == core.GroupName {
-				mgr.config.APIPath = "/v1beta1"
+				mgr.config.APIPath = "/api"
 			}
 			client, err := rest.RESTClientFor(mgr.config)
 			if err != nil {
