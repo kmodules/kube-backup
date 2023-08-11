@@ -1,4 +1,4 @@
-module github.com/tamalsaha/kube-backup
+module kmodules.xyz/kube-backup
 
 go 1.21.0
 
