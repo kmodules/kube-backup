@@ -1,28 +1,25 @@
 package main
 
 import (
-	"github.com/tamalsaha/go-oneliners"
-	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	"k8s.io/client-go/tools/clientcmd"
-	"k8s.io/client-go/util/homedir"
-	"kmodules.xyz/client-go/tools/backup"
+	"fmt"
 	"log"
-	"path/filepath"
+
+	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	"k8s.io/klog/v2/klogr"
+	"kmodules.xyz/client-go/tools/backup"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
 func main() {
-	masterURL := ""
-	kubeconfigPath := filepath.Join(homedir.HomeDir(), ".kube", "config")
+	ctrl.SetLogger(klogr.New())
+	cfg := ctrl.GetConfigOrDie()
+	cfg.QPS = 100
+	cfg.Burst = 100
 
-	config, err := clientcmd.BuildConfigFromFlags(masterURL, kubeconfigPath)
-	if err != nil {
-		log.Fatalf("Could not get Kubernetes config: %s", err)
-	}
-
-	mgr := backup.NewBackupManager("", config, false)
+	mgr := backup.NewBackupManager("", cfg, false)
 	filename, err := mgr.BackupToTar("/tmp")
 	if err != nil {
 		log.Fatalln(err)
 	}
-	oneliners.FILE(filename)
+	fmt.Print(filename)
 }

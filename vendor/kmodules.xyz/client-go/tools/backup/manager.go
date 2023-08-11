@@ -1,18 +1,36 @@
+/*
+Copyright AppsCode Inc. and Contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 package backup
 
 import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	core "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	serializer "k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -20,6 +38,8 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/yaml"
 )
 
@@ -34,13 +54,19 @@ type ItemList struct {
 type BackupManager struct {
 	cluster  string
 	config   *rest.Config
+	mapper   meta.RESTMapper
 	sanitize bool
 }
 
 func NewBackupManager(cluster string, config *rest.Config, sanitize bool) BackupManager {
+	mapper, err := apiutil.NewDynamicRESTMapper(config)
+	if err != nil {
+		panic(err)
+	}
 	return BackupManager{
 		cluster:  cluster,
 		config:   config,
+		mapper:   mapper,
 		sanitize: sanitize,
 	}
 }
@@ -59,17 +85,17 @@ func (mgr BackupManager) BackupToDir(backupDir string) (string, error) {
 	p := func(relPath string, data []byte) error {
 		absPath := filepath.Join(backupDir, snapshotDir, relPath)
 		dir := filepath.Dir(absPath)
-		err := os.MkdirAll(dir, 0777)
+		err := os.MkdirAll(dir, 0o777)
 		if err != nil {
 			return err
 		}
-		return ioutil.WriteFile(absPath, data, 0644)
+		return os.WriteFile(absPath, data, 0o644)
 	}
 	return snapshotDir, mgr.Backup(p)
 }
 
 func (mgr BackupManager) BackupToTar(backupDir string) (string, error) {
-	err := os.MkdirAll(backupDir, 0777)
+	err := os.MkdirAll(backupDir, 0o777)
 	if err != nil {
 		return "", err
 	}
@@ -94,7 +120,7 @@ func (mgr BackupManager) BackupToTar(backupDir string) (string, error) {
 		header := new(tar.Header)
 		header.Name = relPath
 		header.Size = int64(len(data))
-		header.Mode = 0666
+		header.Mode = 0o666
 		header.ModTime = t
 		// write the header to the tarball archive
 		if err := tw.WriteHeader(header); err != nil {
@@ -116,7 +142,7 @@ func (mgr BackupManager) Backup(process processorFunc) error {
 	if err := rest.SetKubernetesDefaults(mgr.config); err != nil {
 		return err
 	}
-	mgr.config.NegotiatedSerializer = serializer.DirectCodecFactory{CodecFactory: scheme.Codecs}
+	mgr.config.NegotiatedSerializer = serializer.WithoutConversionCodecFactory{CodecFactory: scheme.Codecs}
 	if mgr.config.UserAgent == "" {
 		mgr.config.UserAgent = rest.DefaultKubernetesUserAgent()
 	}
@@ -151,7 +177,7 @@ func (mgr BackupManager) Backup(process processorFunc) error {
 				continue
 			}
 
-			glog.V(3).Infof("Taking backup of %s apiVersion:%s kind:%s", list.GroupVersion, r.Name, r.Kind)
+			klog.V(3).Infof("Taking backup of %s apiVersion:%s kind:%s", list.GroupVersion, r.Name, r.Kind)
 			mgr.config.GroupVersion = &gv
 			mgr.config.APIPath = "/apis"
 			if gv.Group == core.GroupName {
@@ -162,7 +188,7 @@ func (mgr BackupManager) Backup(process processorFunc) error {
 				return err
 			}
 			request := client.Get().Resource(r.Name).Param("pretty", "true")
-			resp, err := request.DoRaw()
+			resp, err := request.DoRaw(context.TODO())
 			if err != nil {
 				return err
 			}
@@ -178,7 +204,7 @@ func (mgr BackupManager) Backup(process processorFunc) error {
 
 				md, ok := item["metadata"]
 				if ok {
-					path = getPathFromSelfLink(md)
+					path = getPathFromSelfLink(mgr.mapper, item)
 					if mgr.sanitize {
 						cleanUpObjectMeta(md)
 					}
@@ -284,10 +310,15 @@ func cleanUpPodSpec(in map[string]interface{}) (map[string]interface{}, error) {
 	return out, err
 }
 
-func getPathFromSelfLink(md interface{}) string {
-	meta, ok := md.(map[string]interface{})
-	if ok {
-		return meta["selfLink"].(string) + ".yaml"
+func getPathFromSelfLink(mapper meta.RESTMapper, obj map[string]interface{}) string {
+	u := unstructured.Unstructured{Object: obj}
+	gvk := u.GetObjectKind().GroupVersionKind()
+	mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		panic(err)
 	}
-	return ""
+	if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+		return fmt.Sprintf("%s/%s/namespaces/%s/%s/%s.yaml", gvk.Group, gvk.Version, u.GetNamespace(), mapping.Resource.Resource, u.GetName())
+	}
+	return fmt.Sprintf("%s/%s/%s/%s.yaml", gvk.Group, gvk.Version, mapping.Resource.Resource, u.GetName())
 }
